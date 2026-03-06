@@ -20,6 +20,29 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## Meta Cloud API Setup
+
+Set these variables in `.env.local`:
+
+```bash
+META_SYSTEM_TOKEN=...
+META_APP_ID=...
+META_APP_SECRET=...
+META_PHONE_NUMBER_ID=...
+META_WABA_ID=...
+META_WEBHOOK_VERIFY_TOKEN=...
+META_GRAPH_API_VERSION=v23.0
+```
+
+Available endpoints:
+
+- `GET /api/meta/health`: checks if Meta credentials are configured and valid
+- `GET /api/meta/templates`: loads WhatsApp templates from the configured WABA
+- `POST /api/meta/send-test`: sends a WhatsApp test message using the configured phone number ID
+- `POST /api/meta/subscribe`: subscribes the app to the configured WABA
+- `GET /api/meta/webhook`: webhook verification endpoint for Meta
+- `POST /api/meta/webhook`: inbound WhatsApp webhook endpoint for messages and statuses
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:

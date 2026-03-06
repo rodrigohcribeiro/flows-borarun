@@ -1,0 +1,119 @@
+"use client";
+
+import { useCallback, useRef, type DragEvent } from "react";
+import {
+  ReactFlow,
+  Background,
+  Controls,
+  MiniMap,
+  BackgroundVariant,
+
+} from "@xyflow/react";
+import "@xyflow/react/dist/style.css";
+
+import { useFlowStore } from "@/hooks/use-flow-store";
+import { NODE_TYPES } from "@/types/flow";
+import { createDefaultSplits } from "@/lib/constants";
+
+import { TriggerNode } from "@/components/nodes/trigger-node";
+import { SendMessageNode } from "@/components/nodes/send-message-node";
+import { TemplateImageNode } from "@/components/nodes/template-image-node";
+import { RandomizerNode } from "@/components/nodes/randomizer-node";
+
+import type { TriggerNodeData, SendMessageNodeData, TemplateImageNodeData, RandomizerNodeData } from "@/types/node-data";
+
+const nodeTypes = {
+  [NODE_TYPES.TRIGGER]: TriggerNode,
+  [NODE_TYPES.SEND_MESSAGE]: SendMessageNode,
+  [NODE_TYPES.TEMPLATE_IMAGE]: TemplateImageNode,
+  [NODE_TYPES.RANDOMIZER]: RandomizerNode,
+};
+
+function getDefaultData(type: string) {
+  switch (type) {
+    case NODE_TYPES.TRIGGER:
+      return { type: "trigger", label: "Trigger", triggerType: "manual" } satisfies TriggerNodeData;
+    case NODE_TYPES.SEND_MESSAGE:
+      return { type: "sendMessage", label: "Enviar Mensagem", messageType: "text" } satisfies SendMessageNodeData;
+    case NODE_TYPES.TEMPLATE_IMAGE:
+      return { type: "templateImage", label: "Template com Imagem" } satisfies TemplateImageNodeData;
+    case NODE_TYPES.RANDOMIZER:
+      return { type: "randomizer", label: "Teste A/B", splits: createDefaultSplits() } satisfies RandomizerNodeData;
+    default:
+      return { type: "sendMessage", label: "Enviar Mensagem", messageType: "text" } satisfies SendMessageNodeData;
+  }
+}
+
+export function FlowCanvas() {
+  const reactFlowWrapper = useRef<HTMLDivElement>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const reactFlowInstance = useRef<any>(null);
+
+  const nodes = useFlowStore((s) => s.nodes);
+  const edges = useFlowStore((s) => s.edges);
+  const onNodesChange = useFlowStore((s) => s.onNodesChange);
+  const onEdgesChange = useFlowStore((s) => s.onEdgesChange);
+  const onConnect = useFlowStore((s) => s.onConnect);
+  const addNode = useFlowStore((s) => s.addNode);
+  const setSelectedNodeId = useFlowStore((s) => s.setSelectedNodeId);
+
+  const onDragOver = useCallback((event: DragEvent) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+  }, []);
+
+  const onDrop = useCallback(
+    (event: DragEvent) => {
+      event.preventDefault();
+
+      const type = event.dataTransfer.getData("application/reactflow");
+      if (!type || !reactFlowInstance.current) return;
+
+      const position = reactFlowInstance.current.screenToFlowPosition({
+        x: event.clientX,
+        y: event.clientY,
+      });
+
+      const newNode = {
+        id: `${type}-${Date.now()}`,
+        type,
+        position,
+        data: getDefaultData(type),
+      };
+
+      addNode(newNode);
+    },
+    [addNode]
+  );
+
+  return (
+    <div ref={reactFlowWrapper} className="flex-1 h-full">
+      <ReactFlow
+        nodes={nodes}
+        edges={edges}
+        onNodesChange={onNodesChange}
+        onEdgesChange={onEdgesChange}
+        onConnect={onConnect}
+        onInit={(instance) => {
+          reactFlowInstance.current = instance;
+        }}
+        onDragOver={onDragOver}
+        onDrop={onDrop}
+        onNodeClick={(_, node) => setSelectedNodeId(node.id)}
+        onPaneClick={() => setSelectedNodeId(null)}
+        nodeTypes={nodeTypes}
+        fitView
+        deleteKeyCode={["Backspace", "Delete"]}
+        className="bg-gray-50"
+      >
+        <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#d1d5db" />
+        <Controls position="bottom-left" />
+        <MiniMap
+          position="bottom-right"
+          nodeStrokeWidth={3}
+          className="!bg-white !border !border-gray-200 !rounded-lg"
+        />
+      </ReactFlow>
+    </div>
+  );
+}
