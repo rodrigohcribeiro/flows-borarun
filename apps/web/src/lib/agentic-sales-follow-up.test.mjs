@@ -30,6 +30,7 @@ function loadTypeScriptModule(relativePath) {
 const {
   AGENTIC_SALES_FOLLOW_UP_AFTER_HOURS,
   getAgenticSalesFollowUpDecision,
+  getAgenticSalesFollowUpDecisionFromState,
 } = loadTypeScriptModule("./agentic-sales-follow-up.ts");
 
 const now = new Date("2026-05-04T18:00:00.000Z");
@@ -123,6 +124,46 @@ test("does not send twice for the same latest agent message", () => {
         },
       },
     ],
+  });
+
+  assert.equal(decision.shouldSend, false);
+});
+
+test("does not send when the latest agent message already has a persisted follow-up", () => {
+  const latestAgentMessageAt = hoursAgo(7);
+  const decision = getAgenticSalesFollowUpDecisionFromState({
+    now,
+    conversation: {
+      current_node_id: activeNodeId,
+      subscription_status: null,
+      subscription_plan: null,
+      flow_variables: {
+        __agentic_loop_sales_mode: "true",
+      },
+    },
+    latestAgenticBotMessageAt: latestAgentMessageAt,
+    latestContactMessageAt: null,
+    alreadyFollowedUpForLatest: true,
+  });
+
+  assert.equal(decision.shouldSend, false);
+});
+
+test("does not send another automated follow-up after the user replied to a previous one", () => {
+  const decision = getAgenticSalesFollowUpDecisionFromState({
+    now,
+    conversation: {
+      current_node_id: activeNodeId,
+      subscription_status: null,
+      subscription_plan: null,
+      flow_variables: {
+        __agentic_loop_sales_mode: "true",
+      },
+    },
+    latestAgenticBotMessageAt: hoursAgo(6.7),
+    latestContactMessageAt: hoursAgo(7.1),
+    latestFollowUpAt: hoursAgo(7.2),
+    alreadyFollowedUpForLatest: false,
   });
 
   assert.equal(decision.shouldSend, false);

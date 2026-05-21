@@ -15,8 +15,7 @@ import {
   AGENTIC_SALES_FOLLOW_UP_KIND,
   AGENTIC_SALES_FOLLOW_UP_LOOKBACK_HOURS,
   AGENTIC_SALES_FOLLOW_UP_MESSAGE,
-  getAgenticSalesFollowUpDecision,
-  type AgenticSalesFollowUpMessage,
+  getAgenticSalesFollowUpDecisionFromState,
 } from "@/lib/agentic-sales-follow-up";
 
 const PAYMENT_FOLLOW_UP_AFTER_MINUTES = 45;
@@ -58,12 +57,24 @@ type AgenticSalesFollowUpConversationRow = {
   updated_at: string;
 };
 
+type AgenticSalesFollowUpTimestampRow = {
+  created_at: string;
+};
+
+type AgenticSalesFollowUpLockRow = {
+  id: string;
+};
+
 type StaleRunningFlowConversationRow = {
   id: string;
   contact_phone: string | null;
   organization_id: string;
   updated_at: string;
 };
+
+function isUniqueViolation(error: { code?: string } | null) {
+  return error?.code === "23505";
+}
 
 async function processStaleRunningFlowContinuations(
   supabase: ReturnType<typeof createServerClient>
@@ -268,6 +279,177 @@ async function processPendingPaymentFollowUps(
   return { processed, skipped };
 }
 
+async function loadAgenticSalesFollowUpState(
+  supabase: ReturnType<typeof createServerClient>,
+  conversation: AgenticSalesFollowUpConversationRow,
+  lookback: string
+) {
+  if (!conversation.current_node_id) {
+    return {
+      latestAgenticBotMessageAt: null,
+      latestContactMessageAt: null,
+      alreadyFollowedUpForLatest: false,
+    };
+  }
+
+  const { data: latestAgenticBotMessage, error: latestAgenticBotError } =
+    await supabase
+      .from("messages")
+      .select("created_at")
+      .eq("conversation_id", conversation.id)
+      .eq("sender", "bot")
+      .eq("node_id", conversation.current_node_id)
+      .is("metadata->>agentic_sales_follow_up_kind", null)
+      .gte("created_at", lookback)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+  if (latestAgenticBotError) {
+    console.error(
+      "Timer cron: failed to query latest agentic bot message",
+      {
+        conversationId: conversation.id,
+        error: latestAgenticBotError,
+      }
+    );
+    return null;
+  }
+
+  const latestAgenticBotMessageAt =
+    (latestAgenticBotMessage as AgenticSalesFollowUpTimestampRow | null)
+      ?.created_at || null;
+
+  if (!latestAgenticBotMessageAt) {
+    return {
+      latestAgenticBotMessageAt,
+      latestContactMessageAt: null,
+      alreadyFollowedUpForLatest: false,
+    };
+  }
+
+  const { data: latestContactMessage, error: latestContactError } =
+    await supabase
+      .from("messages")
+      .select("created_at")
+      .eq("conversation_id", conversation.id)
+      .eq("sender", "contact")
+      .gte("created_at", lookback)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+  if (latestContactError) {
+    console.error(
+      "Timer cron: failed to query latest contact message",
+      {
+        conversationId: conversation.id,
+        error: latestContactError,
+      }
+    );
+    return null;
+  }
+
+  const { data: latestFollowUp, error: latestFollowUpError } = await supabase
+    .from("messages")
+    .select("created_at")
+    .eq("conversation_id", conversation.id)
+    .eq("sender", "bot")
+    .eq(
+      "metadata->>agentic_sales_follow_up_kind",
+      AGENTIC_SALES_FOLLOW_UP_KIND
+    )
+    .gte("created_at", lookback)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (latestFollowUpError) {
+    console.error(
+      "Timer cron: failed to query latest agentic sales follow-up",
+      {
+        conversationId: conversation.id,
+        error: latestFollowUpError,
+      }
+    );
+    return null;
+  }
+
+  const { data: existingFollowUp, error: existingFollowUpError } =
+    await supabase
+      .from("messages")
+      .select("created_at")
+      .eq("conversation_id", conversation.id)
+      .eq("sender", "bot")
+      .eq("node_id", conversation.current_node_id)
+      .eq(
+        "metadata->>agentic_sales_follow_up_kind",
+        AGENTIC_SALES_FOLLOW_UP_KIND
+      )
+      .eq("metadata->>agentic_sales_follow_up_for", latestAgenticBotMessageAt)
+      .limit(1)
+      .maybeSingle();
+
+  if (existingFollowUpError) {
+    console.error(
+      "Timer cron: failed to query existing agentic sales follow-up",
+      {
+        conversationId: conversation.id,
+        latestAgenticBotMessageAt,
+        error: existingFollowUpError,
+      }
+    );
+    return null;
+  }
+
+  return {
+    latestAgenticBotMessageAt,
+    latestContactMessageAt:
+      (latestContactMessage as AgenticSalesFollowUpTimestampRow | null)
+        ?.created_at || null,
+    latestFollowUpAt:
+      (latestFollowUp as AgenticSalesFollowUpTimestampRow | null)
+        ?.created_at || null,
+    alreadyFollowedUpForLatest: Boolean(existingFollowUp),
+  };
+}
+
+async function acquireAgenticSalesFollowUpLock(
+  supabase: ReturnType<typeof createServerClient>,
+  conversation: AgenticSalesFollowUpConversationRow,
+  nodeId: string,
+  latestAgenticBotMessageAt: string
+) {
+  const { data, error } = await supabase
+    .from("message_send_locks")
+    .insert({
+      conversation_id: conversation.id,
+      organization_id: conversation.organization_id,
+      kind: AGENTIC_SALES_FOLLOW_UP_KIND,
+      target_message_at: latestAgenticBotMessageAt,
+      node_id: nodeId,
+    })
+    .select("id")
+    .single();
+
+  if (error) {
+    if (!isUniqueViolation(error)) {
+      console.error(
+        "Timer cron: failed to acquire agentic sales follow-up lock",
+        {
+          conversationId: conversation.id,
+          latestAgenticBotMessageAt,
+          error,
+        }
+      );
+    }
+
+    return null;
+  }
+
+  return (data as AgenticSalesFollowUpLockRow).id;
+}
+
 async function processAgenticSalesFollowUps(
   supabase: ReturnType<typeof createServerClient>
 ) {
@@ -308,19 +490,20 @@ async function processAgenticSalesFollowUps(
       continue;
     }
 
-    const { data: recentMessages } = await supabase
-      .from("messages")
-      .select("sender, node_id, metadata, created_at")
-      .eq("conversation_id", conversation.id)
-      .gte("created_at", lookback)
-      .order("created_at", { ascending: true })
-      .limit(80);
-
-    const messages =
-      (recentMessages || []) as AgenticSalesFollowUpMessage[];
-    const followUpDecision = getAgenticSalesFollowUpDecision({
+    const followUpState = await loadAgenticSalesFollowUpState(
+      supabase,
       conversation,
-      messages,
+      lookback
+    );
+
+    if (!followUpState) {
+      skipped++;
+      continue;
+    }
+
+    const followUpDecision = getAgenticSalesFollowUpDecisionFromState({
+      conversation,
+      ...followUpState,
     });
 
     if (!followUpDecision.shouldSend) {
@@ -333,6 +516,18 @@ async function processAgenticSalesFollowUps(
     );
     const { config: metaConfig } = getMetaConfigFromSettings(settings);
     if (!metaConfig) {
+      skipped++;
+      continue;
+    }
+
+    const lockId = await acquireAgenticSalesFollowUpLock(
+      supabase,
+      conversation,
+      followUpDecision.nodeId,
+      followUpDecision.latestAgenticBotMessageAt
+    );
+
+    if (!lockId) {
       skipped++;
       continue;
     }
@@ -359,6 +554,7 @@ async function processAgenticSalesFollowUps(
             followUpDecision.latestAgenticBotMessageAt,
           agentic_sales_follow_up_kind: AGENTIC_SALES_FOLLOW_UP_KIND,
           agentic_sales_follow_up_node_id: followUpDecision.nodeId,
+          agentic_sales_follow_up_lock_id: lockId,
         },
       });
 
