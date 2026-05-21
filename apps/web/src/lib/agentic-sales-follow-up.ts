@@ -30,6 +30,13 @@ export type AgenticSalesFollowUpDecision =
       reason: string;
     };
 
+export type AgenticSalesFollowUpDecisionState = {
+  latestAgenticBotMessageAt: string | null;
+  latestContactMessageAt: string | null;
+  latestFollowUpAt?: string | null;
+  alreadyFollowedUpForLatest: boolean;
+};
+
 function isPremiumActive(conversation: AgenticSalesFollowUpConversation) {
   return (
     conversation.subscription_status === "active" &&
@@ -65,6 +72,45 @@ export function getAgenticSalesFollowUpDecision(params: {
   conversation: AgenticSalesFollowUpConversation;
   messages: AgenticSalesFollowUpMessage[];
 }): AgenticSalesFollowUpDecision {
+  const nodeId = params.conversation.current_node_id;
+  const latestAgenticBotMessage = params.messages
+    .filter(
+      (message) =>
+        message.node_id === nodeId &&
+        message.sender === "bot" &&
+        !isAgenticSalesFollowUpMessage(message)
+    )
+    .at(-1);
+
+  const latestContactMessage = params.messages
+    .filter((message) => message.sender === "contact")
+    .at(-1);
+  const latestFollowUpMessage = params.messages
+    .filter((message) => isAgenticSalesFollowUpMessage(message))
+    .at(-1);
+  const alreadyFollowedUpForLatest =
+    latestAgenticBotMessage &&
+    params.messages.some(
+      (message) =>
+        isAgenticSalesFollowUpMessage(message) &&
+        message.metadata?.agentic_sales_follow_up_for ===
+          latestAgenticBotMessage.created_at
+    );
+
+  return getAgenticSalesFollowUpDecisionFromState({
+    now: params.now,
+    conversation: params.conversation,
+    latestAgenticBotMessageAt: latestAgenticBotMessage?.created_at || null,
+    latestContactMessageAt: latestContactMessage?.created_at || null,
+    latestFollowUpAt: latestFollowUpMessage?.created_at || null,
+    alreadyFollowedUpForLatest: Boolean(alreadyFollowedUpForLatest),
+  });
+}
+
+export function getAgenticSalesFollowUpDecisionFromState(params: {
+  now?: Date;
+  conversation: AgenticSalesFollowUpConversation;
+} & AgenticSalesFollowUpDecisionState): AgenticSalesFollowUpDecision {
   const now = params.now || new Date();
   const nodeId = params.conversation.current_node_id;
 
@@ -80,22 +126,13 @@ export function getAgenticSalesFollowUpDecision(params: {
     return { shouldSend: false, reason: "premium_active" };
   }
 
-  const latestAgenticBotMessage = params.messages
-    .filter(
-      (message) =>
-        message.node_id === nodeId &&
-        message.sender === "bot" &&
-        !isAgenticSalesFollowUpMessage(message)
-    )
-    .at(-1);
-
-  if (!latestAgenticBotMessage) {
+  if (!params.latestAgenticBotMessageAt) {
     return { shouldSend: false, reason: "missing_agentic_bot_message" };
   }
 
   if (
     !isOlderThanHours(
-      latestAgenticBotMessage.created_at,
+      params.latestAgenticBotMessageAt,
       now,
       AGENTIC_SALES_FOLLOW_UP_AFTER_HOURS
     )
@@ -103,30 +140,28 @@ export function getAgenticSalesFollowUpDecision(params: {
     return { shouldSend: false, reason: "too_recent" };
   }
 
-  const userRepliedAfterLatestBot = params.messages.some(
-    (message) =>
-      message.sender === "contact" &&
-      message.created_at > latestAgenticBotMessage.created_at
-  );
-
-  if (userRepliedAfterLatestBot) {
+  if (
+    params.latestContactMessageAt &&
+    params.latestContactMessageAt > params.latestAgenticBotMessageAt
+  ) {
     return { shouldSend: false, reason: "user_replied_after_latest_bot" };
   }
 
-  const alreadyFollowedUp = params.messages.some(
-    (message) =>
-      isAgenticSalesFollowUpMessage(message) &&
-      message.metadata?.agentic_sales_follow_up_for ===
-        latestAgenticBotMessage.created_at
-  );
+  if (
+    params.latestContactMessageAt &&
+    params.latestFollowUpAt &&
+    params.latestContactMessageAt > params.latestFollowUpAt
+  ) {
+    return { shouldSend: false, reason: "user_replied_after_follow_up" };
+  }
 
-  if (alreadyFollowedUp) {
+  if (params.alreadyFollowedUpForLatest) {
     return { shouldSend: false, reason: "already_followed_up" };
   }
 
   return {
     shouldSend: true,
     nodeId,
-    latestAgenticBotMessageAt: latestAgenticBotMessage.created_at,
+    latestAgenticBotMessageAt: params.latestAgenticBotMessageAt,
   };
 }
